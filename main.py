@@ -1,16 +1,23 @@
+import logging
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 
-@register("temperature_control", "Moan282", "DeepSeek 温度控制（斜杠命令版）", "v1.2.0", "https://github.com/Moan282/astrbot_plugin_temperature")
+logger = logging.getLogger(__name__)
+
+@register("temperature_control", "Moan282", "DeepSeek 温度控制（斜杠命令版）", "v1.2.1", "https://github.com/Moan282/astrbot_plugin_temperature")
 class TemperaturePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.temperature = 0.7
-        self._apply_temperature()
-        self.context.logger.info(f"✅ 温度控制插件加载成功，当前温度 = {self.temperature}")
+        # 尝试应用温度，但无论成败都不影响加载
+        try:
+            self._apply_temperature()
+            logger.info(f"✅ 温度控制插件加载成功，当前温度 = {self.temperature}")
+        except Exception as e:
+            logger.warning(f"⚠️ 初始应用温度失败: {e}")
 
     def _apply_temperature(self):
-        """将当前温度应用到 provider"""
+        """将当前温度应用到 provider（静默执行）"""
         try:
             if hasattr(self.context, 'provider'):
                 provider = self.context.provider
@@ -20,12 +27,15 @@ class TemperaturePlugin(Star):
                     provider.set_param('temperature', self.temperature)
                 elif hasattr(provider, 'default_params'):
                     provider.default_params['temperature'] = self.temperature
+                elif hasattr(self.context, 'conf'):
+                    self.context.conf['temperature'] = self.temperature
                 else:
-                    if hasattr(self.context, 'conf'):
-                        self.context.conf['temperature'] = self.temperature
-            self.context.logger.info(f"🌡️ 已应用 temperature = {self.temperature}")
+                    # 如果都不可用，尝试修改全局配置（如果有）
+                    logger.warning("无法通过 provider 设置温度，插件仅提供查询/修改命令，实际生效需重启或手动配置")
+            else:
+                logger.warning("没有 provider 对象，温度可能无法自动应用")
         except Exception as e:
-            self.context.logger.warning(f"⚠️ 应用温度失败: {e}")
+            logger.warning(f"应用温度时出错（不影响插件运行）: {e}")
 
     @filter.command("/温度查询")
     async def query_temp(self, event: AstrMessageEvent):
