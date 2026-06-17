@@ -1,0 +1,2 @@
+# astrbot_plugin_temperature
+控制AI的temperature值
