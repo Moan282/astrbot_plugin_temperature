@@ -1,0 +1,5 @@
+name: TemperatureControl
+desc: 强制锁定 DeepSeek API 温度为 0.7
+version: v1.0.0
+author: 你的名字
+repo: https://github.com/你的用户名/astrbot_plugin_temperature
