@@ -1,60 +1,86 @@
-import logging
-from astrbot.api.event import filter, AstrMessageEvent
+import json
+import os
+from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
 
-logger = logging.getLogger(__name__)
-
-@register("temperature_control", "Moan282", "DeepSeek 温度控制（斜杠命令版）", "v1.2.1", "https://github.com/Moan282/astrbot_plugin_temperature")
-class TemperaturePlugin(Star):
+@register(
+    "astrbot_plugin_token_stats",
+    "Moan282",
+    "显示每次请求的Token消耗详情（输入/输出/缓存命中），支持开关",
+    "1.2.0",
+    "https://github.com/Moan282/astrbot_plugin_token_stats"
+)
+class TokenStatsPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        self.temperature = 0.7
-        # 尝试应用温度，但无论成败都不影响加载
+        self.config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        self.enabled = self._load_config()
+        logger.info(f"✅ Token统计插件已加载，当前状态：{'开启' if self.enabled else '关闭'}")
+
+    def _load_config(self):
         try:
-            self._apply_temperature()
-            logger.info(f"✅ 温度控制插件加载成功，当前温度 = {self.temperature}")
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                return config.get('enabled', True)
+        except FileNotFoundError:
+            return True
         except Exception as e:
-            logger.warning(f"⚠️ 初始应用温度失败: {e}")
+            logger.error(f"加载配置失败: {e}")
+            return True
 
-    def _apply_temperature(self):
-        """将当前温度应用到 provider（静默执行）"""
+    def _save_config(self):
         try:
-            if hasattr(self.context, 'provider'):
-                provider = self.context.provider
-                if hasattr(provider, 'temperature'):
-                    provider.temperature = self.temperature
-                elif hasattr(provider, 'set_param'):
-                    provider.set_param('temperature', self.temperature)
-                elif hasattr(provider, 'default_params'):
-                    provider.default_params['temperature'] = self.temperature
-                elif hasattr(self.context, 'conf'):
-                    self.context.conf['temperature'] = self.temperature
-                else:
-                    # 如果都不可用，尝试修改全局配置（如果有）
-                    logger.warning("无法通过 provider 设置温度，插件仅提供查询/修改命令，实际生效需重启或手动配置")
-            else:
-                logger.warning("没有 provider 对象，温度可能无法自动应用")
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump({'enabled': self.enabled}, f, ensure_ascii=False, indent=2)
+            return True
         except Exception as e:
-            logger.warning(f"应用温度时出错（不影响插件运行）: {e}")
+            logger.error(f"保存配置失败: {e}")
+            return False
 
-    @filter.command("/温度查询")
-    async def query_temp(self, event: AstrMessageEvent):
-        yield event.make_result().message(f"🌡️ 当前 temperature = {self.temperature}")
-
-    @filter.command("/温度更改")
-    async def change_temp(self, event: AstrMessageEvent):
-        msg = event.message_str.strip()
-        parts = msg.split()
-        if len(parts) < 2:
-            yield event.make_result().message("❌ 用法：/温度更改 0.8（范围 0.0~1.0）")
+    @filter.command("/token显示 开")
+    async def turn_on(self, event: AstrMessageEvent):
+        if self.enabled:
+            yield event.make_result().message("⚙️ Token统计已处于开启状态")
             return
-        try:
-            val = float(parts[1])
-            if not (0.0 <= val <= 1.0):
-                yield event.make_result().message("❌ 温度必须在 0.0 到 1.0 之间")
-                return
-            self.temperature = val
-            self._apply_temperature()
-            yield event.make_result().message(f"✅ temperature 已设置为 {val}")
-        except ValueError:
-            yield event.make_result().message("❌ 请输入数字，例如 /温度更改 0.8")
+        self.enabled = True
+        if self._save_config():
+            yield event.make_result().message("✅ Token统计显示已开启")
+        else:
+            yield event.make_result().message("❌ 开启失败，请检查日志")
+
+    @filter.command("/token显示 关")
+    async def turn_off(self, event: AstrMessageEvent):
+        if not self.enabled:
+            yield event.make_result().message("⚙️ Token统计已处于关闭状态")
+            return
+        self.enabled = False
+        if self._save_config():
+            yield event.make_result().message("✅ Token统计显示已关闭")
+        else:
+            yield event.make_result().message("❌ 关闭失败，请检查日志")
+
+    @filter.after_message
+    async def after_message(self, event: AstrMessageEvent, result: MessageEventResult):
+        """在每条消息处理完成后自动执行，result 包含本次响应的 Token 信息"""
+        if not self.enabled:
+            return
+
+        # 从 result 中提取 Token 使用情况
+        token_usage = getattr(result, 'token_usage', None)
+        if token_usage:
+            input_tokens = getattr(token_usage, 'prompt_tokens', 0)
+            output_tokens = getattr(token_usage, 'completion_tokens', 0)
+            cached_tokens = getattr(token_usage, 'prompt_cache_hit_tokens', 0)
+            uncached_tokens = input_tokens - cached_tokens
+
+            stats_msg = (
+                f"📊 **本次Token消耗**\n"
+                f"• 输入总计: {input_tokens}\n"
+                f"  - ✅ 缓存命中: {cached_tokens}\n"
+                f"  - ❌ 未命中: {uncached_tokens}\n"
+                f"• 输出总计: {output_tokens}\n"
+                f"• 合计: {input_tokens + output_tokens}"
+            )
+            yield event.make_result().message(stats_msg)
+        # 如果无法获取，则静默退出
